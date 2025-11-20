@@ -31,7 +31,12 @@ import (
 )
 
 func FailWithError(str string, err error) {
-	fmt.Println(str, err)
+	if err != nil {
+		fmt.Println("Error:", str, err)
+	} else {
+		fmt.Println("Error:", str)
+	}
+
 	os.Exit(1)
 }
 
