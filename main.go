@@ -6,28 +6,27 @@ import (
 	"os"
 
 	"github.com/argoproj-labs/argocd-operator/api/v1beta1"
+	"github.com/jgwest/argocd-config-check/clients"
 )
 
 func main() {
 
-	var abstractK8sClient AbstractK8sClient
+	var abstractK8sClient clients.AbstractK8sClient
 
 	if len(os.Args) == 1 {
-		k8sClientFromSystem, _ := GetK8sClient()
-
-		abstractK8sClient = &traditionalK8sClient{
-			client: k8sClientFromSystem,
+		var err error
+		abstractK8sClient, err = clients.SystemK8sClient()
+		if err != nil {
+			failWithError("unable to retrieve system K8s client configuration", err)
 		}
 		outputStatusMessage("Using default K8s client configuration from '.kube/config'")
 
 	} else if len(os.Args) == 2 {
-
-		pathToOMCDirectory := os.Args[1]
-
 		var err error
-		abstractK8sClient, err = newOMCClient(pathToOMCDirectory)
+		pathToOMCDirectory := os.Args[1]
+		abstractK8sClient, err = clients.OMCClient(pathToOMCDirectory)
 		if err != nil {
-			FailWithError("unable to retrieve OMC client data from '"+pathToOMCDirectory+"'", err)
+			failWithError("unable to retrieve OMC client data from '"+pathToOMCDirectory+"'", err)
 		}
 	} else {
 		outputStatusMessage("Unexpected number of arguments. Valid parameters are:")
@@ -38,7 +37,7 @@ func main() {
 		outputStatusMessage("Validate Argo CD configuration using must-gather output")
 		outputStatusMessage("- argocd-config-check (path to must-gather directory for omc)")
 		outputStatusMessage("")
-		FailWithError("Unexpected number of arguments.", nil)
+		failWithError("Unexpected number of arguments.", nil)
 	}
 
 	ctx := context.Background()
@@ -47,11 +46,11 @@ func main() {
 
 }
 
-func runChecks(ctx context.Context, k8sClient AbstractK8sClient) {
+func runChecks(ctx context.Context, k8sClient clients.AbstractK8sClient) {
 
 	var argoCDList v1beta1.ArgoCDList
 	if err := k8sClient.ListFromAllNamespaces(ctx, &argoCDList); err != nil {
-		FailWithError("unable to list ArgoCDs", err)
+		failWithError("unable to list ArgoCDs", err)
 	}
 
 	for _, argoCD := range argoCDList.Items {
