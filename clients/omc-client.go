@@ -70,13 +70,55 @@ func (o *omcClient) ListFromSingleNamespace(ctx context.Context, list client.Obj
 	return nil
 }
 
+func (o *omcClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object) error {
+	typeFromObj, err := convertObjectToOMCType(obj)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command("omc", "get", typeFromObj, key.Name, "-n", key.Namespace, "-o", "yaml")
+	outBytes, err := cmd.CombinedOutput()
+	k8sResourceYAML := (string)(outBytes)
+
+	if err != nil {
+		return fmt.Errorf("Output from OMC: %s\nUnable to retrieve '%s/%s' from namespace '%s': %v", k8sResourceYAML, typeFromObj, key.Name, key.Namespace, err)
+	}
+
+	if err := yaml.Unmarshal([]byte(k8sResourceYAML), obj); err != nil {
+		return fmt.Errorf("Output from OMC: %s\nFailed to unmarshal YAML to %T: %w", k8sResourceYAML, obj, err)
+	}
+
+	return nil
+}
+
+func (o *omcClient) IncompleteControlPlaneData() bool {
+	return true
+}
+
 func convertObjectListToOMCType(list client.ObjectList) (string, error) {
 	listType := fmt.Sprintf("%T", list)
 	switch listType {
 	case "*v1beta1.ArgoCDList":
 		return "argocds", nil
+	case "*v1alpha1.SubscriptionList":
+		return "subscriptions", nil
+	case "*v1alpha1.ClusterServiceVersion":
+		return "clusterserviceversions", nil
 	default:
 		return "", fmt.Errorf("unrecognized type: %s", listType)
 	}
+}
 
+func convertObjectToOMCType(obj client.Object) (string, error) {
+	objType := fmt.Sprintf("%T", obj)
+	switch objType {
+	case "*v1beta1.ArgoCD":
+		return "argocd", nil
+	case "*v1alpha1.SubscriptionList":
+		return "subscriptions", nil
+	case "*v1alpha1.ClusterServiceVersion":
+		return "clusterserviceversions", nil
+	default:
+		return "", fmt.Errorf("unrecognized type: %s", objType)
+	}
 }

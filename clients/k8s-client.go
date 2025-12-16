@@ -54,6 +54,14 @@ func (t *traditionalK8sClient) ListFromSingleNamespace(ctx context.Context, list
 	return t.client.List(ctx, list, client.InNamespace(namespace))
 }
 
+func (t *traditionalK8sClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object) error {
+	return t.client.Get(ctx, key, obj)
+}
+
+func (t *traditionalK8sClient) IncompleteControlPlaneData() bool {
+	return false
+}
+
 func getSystemK8sClient() (client.Client, *runtime.Scheme, error) {
 	config, err := getSystemKubeConfig()
 	if err != nil {
