@@ -376,6 +376,7 @@ func checkIndividualArgoCDCR(argoCD v1beta1.ArgoCD, clusterInfo clusterInformati
 	checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD, &issues)
 	checkForIncorrectConfigurations(argoCD, &issues)
 	checkArgoCDStatusField(argoCD, &issues)
+	checkForFailingBestPractices(argoCD, &issues)
 
 	return &issues
 
@@ -601,8 +602,6 @@ func checkForTechPreviewOrExperimentalFeatures(argoCD v1beta1.ArgoCD, issues *[]
 	}
 }
 
-// TODO: .spec.extraConfig can be used to inject into argocd-cm
-
 // checkForEnvVarsOrParamsWhichOverlapWithCRFields is designed to check for cases where a user has specified env var or container arg that overrides another field within the ArgoCD CR.
 // For example, if a user attempts to enable ApplicationSets in any namespace feature, via:
 // - 'ARGOCD_APPLICATIONSET_CONTROLLER_NAMESPACES=(...)'
@@ -610,7 +609,7 @@ func checkForTechPreviewOrExperimentalFeatures(argoCD v1beta1.ArgoCD, issues *[]
 // This is incorrect, as the correct mechanism to enable ApplicationSets in any namespace is via '.spec.applicationSet.sourceNamespaces' field in the CR
 func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issues *[]issue) {
 
-	{
+	if len(argoCD.Spec.ExtraConfig) > 0 {
 		extraConfig := argoCD.Spec.ExtraConfig
 
 		if extraConfig["timeout.reconciliation"] != "" {
@@ -661,6 +660,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 
 	}
 
+	// appController rules
 	if argoCD.Spec.Controller.IsEnabled() {
 		appController := argoCD.Spec.Controller
 
@@ -704,6 +704,22 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 			})
 		}
 
+		if containerArgsContainsParam(appController.ExtraCommandArgs, "app-resync") {
+			*issues = append(*issues, issue{
+				level:   LogLevel_Warn,
+				field:   ".spec.controller.extraCommandArgs = --app-resync",
+				message: "Specifying '--app-resync' param is supported, but it is preferable to use '.spec.controller.appSync' ArgoCD CR field for this.",
+			})
+		}
+
+		if containerEnvVarContainsName(appController.Env, "ARGOCD_RECONCILIATION_TIMEOUT") {
+			*issues = append(*issues, issue{
+				level:   LogLevel_Error,
+				field:   ".spec.controller.env[ARGOCD_RECONCILIATION_TIMEOUT] = (...)",
+				message: "Specifying ARGOCD_RECONCILIATION_TIMEOUT is not supported. Use '.spec.controller.appSync' ArgoCD CR field for this.",
+			})
+		}
+
 	}
 
 	if argoCD.Spec.Repo.Enabled != nil && *argoCD.Spec.Repo.Enabled {
@@ -718,7 +734,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		}
 	}
 
-	if argoCD.Spec.Server.Enabled != nil && *argoCD.Spec.Server.Enabled {
+	if argoCD.Spec.Server.IsEnabled() {
 		server := argoCD.Spec.Server
 
 		if containerEnvVarContainsName(server.Env, "ARGOCD_API_SERVER_REPLICAS") {
@@ -733,6 +749,70 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 
 func checkForIncorrectConfigurations(argoCD v1beta1.ArgoCD, issues *[]issue) {
 
+	// ExtraConfig misconfigurations
+	if len(argoCD.Spec.ExtraConfig) > 0 {
+		extraConfig := argoCD.Spec.ExtraConfig
+
+		// A mistake users can make is specifying 'argocd-cmd-params-cm' values in '.spec.extraConfig'. extraConfig is only for adding values to 'argocd-cm', which is different, and has a different set of supported values.
+		// This is a list of keys which I have verified are from 'argocd-cmd-params-cm' but are NOT supported when specified in extraconfig.
+		unsupportedExtraConfigKeysFromArgoCDCMDParamsCM := []string{
+			"controller.operation.processors",
+			"controller.status.processors",
+			"controller.log.format",
+			"controller.log.level",
+			"controller.sharding.algorithm",
+			"controller.kubectl.parallelism.limit",
+			"controller.diff.server.side",
+
+			"server.insecure",
+			"server.log.format",
+			"server.log.level",
+			"server.repo.server.timeout.seconds",
+			"server.repo.server.strict.tls",
+
+			"reposerver.log.format",
+			"reposerver.log.level",
+			"reposerver.parallelism.limit",
+			"reposerver.disable.tls",
+			"reposerver.repo.cache.expiration",
+			"reposerver.default.cache.expiration",
+			"reposerver.git.request.timeout",
+
+			"dexserver.log.format",
+			"dexserver.log.level",
+			"dexserver.disable.tls",
+
+			"applicationsetcontroller.log.format",
+			"applicationsetcontroller.log.level",
+			"applicationsetcontroller.dryrun",
+			"applicationsetcontroller.namespaces",
+			"applicationsetcontroller.allowed.scm.providers",
+			"applicationsetcontroller.enable.scm.providers",
+			"applicationsetcontroller.requeue.after",
+			"applicationsetcontroller.status.max.resources.count",
+
+			"notificationscontroller.log.level",
+			"notificationscontroller.log.format",
+		}
+
+		unsupportedKeysMap := make(map[string]any, len(unsupportedExtraConfigKeysFromArgoCDCMDParamsCM))
+		for _, key := range unsupportedExtraConfigKeysFromArgoCDCMDParamsCM {
+			unsupportedKeysMap[key] = struct{}{}
+		}
+
+		for key := range extraConfig {
+			if _, exists := unsupportedKeysMap[key]; exists {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Error,
+					field:   ".spec.extraConfig[" + key + "]",
+					message: "The '" + key + "' key is not a valid extraConfig key. This key is from 'argocd-cmd-params-cm', but extraConfig only supports 'argocd-cm' keys. Remove this key from extraConfig, and use the corresponding ArgoCD CR field (or env var/param argument) instead.",
+				})
+			}
+		}
+
+	}
+
+	// appController misconfigurations
 	if argoCD.Spec.Controller.IsEnabled() {
 		appController := argoCD.Spec.Controller
 
@@ -750,6 +830,56 @@ func checkForIncorrectConfigurations(argoCD v1beta1.ArgoCD, issues *[]issue) {
 			}
 		}
 
+		// Run a rough heuristic to report if operation processors is too high re: memory limit for app controller
+		if appController.Processors.Operation > 0 {
+			requiredMemoryInMiBs := appController.Processors.Operation * 35
+
+			if appController.Resources != nil && appController.Resources.Limits != nil {
+
+				memoryLimits := appController.Resources.Limits.Memory()
+
+				if memoryLimits != nil {
+
+					memoryLimitInMiBs := memoryLimits.Value() / (1024 * 1024)
+
+					if int64(requiredMemoryInMiBs) > memoryLimitInMiBs {
+						*issues = append(*issues, issue{
+							level:   LogLevel_Warn,
+							field:   ".spec.controller.processors.operation",
+							message: fmt.Sprintf("The operation processors value of %d may require approximately %d MiB of memory (as a very rough heuristic) if fully utilized, but the memory limit is only %d MiB. Consider increasing the memory limit or reducing the number of operation processors. For comparison, the default value for this field is 10.", appController.Processors.Operation, requiredMemoryInMiBs, memoryLimitInMiBs),
+						})
+					}
+
+				}
+
+			}
+		}
+
+	}
+
+	// While the '.spec.cmdParams' fields exists for adding values to 'argocd-cmd-params-cm', only a small number of values are supported.
+	if len(argoCD.Spec.CmdParams) > 0 {
+		cmdParams := argoCD.Spec.CmdParams
+
+		// Only a subset of values are supported in CmdParams:
+		supportedCmdParams := []string{
+			"controller.resource.health.persist", "server.profile.enabled", "controller.profile.enabled",
+		}
+
+		supportCmdParamsMap := map[string]any{} // convert string list to map for efficient existence check
+		for _, supsupportedCmdParam := range supportedCmdParams {
+			supportCmdParamsMap[supsupportedCmdParam] = true
+		}
+
+		for key := range cmdParams {
+			if _, exists := supportCmdParamsMap[key]; !exists {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Error,
+					field:   ".spec.cmdParams[" + key + "]",
+					message: "The cmdParams key '" + key + "' is not a supported parameter of '.spec.cmdParams'. It will not affect Argo CD configuration. You likely instead want to either A) use the corresponding value in ArgoCD CR if it exists, or B) use environment variable/container argument to enable the configuration.",
+				})
+			}
+		}
 	}
 
 }
@@ -772,4 +902,45 @@ func checkArgoCDStatusField(argoCD v1beta1.ArgoCD, issues *[]issue) {
 			})
 		}
 	}
+}
+
+func checkForFailingBestPractices(argoCD v1beta1.ArgoCD, issues *[]issue) {
+
+	if argoCD.Spec.Server.IsEnabled() {
+		server := argoCD.Spec.Server
+
+		if server.Insecure {
+			*issues = append(*issues, issue{
+				level:   LogLevel_Warn,
+				field:   ".spec.server.insecure",
+				message: "Argo CD server component is currently in an insecure state.",
+			})
+		}
+	}
+
+	if argoCD.Spec.ArgoCDAgent != nil {
+		argocdAgent := argoCD.Spec.ArgoCDAgent
+		if argocdAgent.Principal != nil {
+			principal := argocdAgent.Principal
+
+			if principal.TLS != nil && principal.TLS.InsecureGenerate != nil && *principal.TLS.InsecureGenerate {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Warn,
+					field:   ".spec.argoCDAgent.principal.TLS.insecureGenerate",
+					message: "Argo CD Agent principal is generating insecure TLS certificates",
+				})
+			}
+		}
+		if argocdAgent.Agent != nil {
+			agent := argocdAgent.Agent
+			if agent.TLS != nil && agent.TLS.Insecure != nil && *agent.TLS.Insecure {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Warn,
+					field:   ".spec.argoCDAgent.agent.tls.insecure",
+					message: "Argo CD Agent agent is running in an insecure configuration",
+				})
+			}
+		}
+	}
+
 }
