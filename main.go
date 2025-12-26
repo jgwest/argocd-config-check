@@ -609,33 +609,80 @@ func checkForTechPreviewOrExperimentalFeatures(argoCD v1beta1.ArgoCD, issues *[]
 // This is incorrect, as the correct mechanism to enable ApplicationSets in any namespace is via '.spec.applicationSet.sourceNamespaces' field in the CR
 func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issues *[]issue) {
 
+	// Identify values a user specified in .spec.extraConfig which would be better specifies within ArgoCD CR itself
 	if len(argoCD.Spec.ExtraConfig) > 0 {
 		extraConfig := argoCD.Spec.ExtraConfig
 
-		if extraConfig["timeout.reconciliation"] != "" {
-			*issues = append(*issues, issue{
-				level:   LogLevel_Warn,
-				field:   ".spec.extraConfig[timeout.reconciliation] = (...)",
-				message: "The 'timeout.reconciliation' value in extraConfig is supported, but it is preferable to use '.spec.controller.appSync' ArgoCD CR field for this.",
-			})
+		type directTranslation struct {
+			extraConfigField     string
+			correspondingCRField string
 		}
 
-		if extraConfig["admin.enabled"] != "" {
-			*issues = append(*issues, issue{
-				level:   LogLevel_Warn,
-				field:   ".spec.extraConfig[admin.enabled] = (...)",
-				message: "The 'admin.enabled' value in extraConfig is supported, but it is preferable to use '.spec.disableAdmin' ArgoCD CR field for this.",
-			})
+		directTranslations := []directTranslation{
+			{extraConfigField: "admin.enabled", correspondingCRField: ".spec.disableAdmin"},
+			{extraConfigField: "application.instanceLabelKey", correspondingCRField: ".spec.applicationInstanceLabelKey"},
+			{extraConfigField: "application.resourceTrackingMethod", correspondingCRField: ".spec.resourceTrackingMethod"},
+			{extraConfigField: "dex.config", correspondingCRField: ".spec.sso.dex"},
+			{extraConfigField: "ga.anonymizeusers", correspondingCRField: ".spec.gaAnonymizeUsers"},
+			{extraConfigField: "ga.trackingid", correspondingCRField: ".spec.gaTrackingID"},
+			{extraConfigField: "help.chatText", correspondingCRField: ".spec.helpChatText"},
+			{extraConfigField: "help.chatUrl", correspondingCRField: ".spec.helpChatURL"},
+			{extraConfigField: "installationID", correspondingCRField: ".spec.installationID"},
+			{extraConfigField: "kustomize.buildOptions", correspondingCRField: ".spec.kustomizeBuildOptions"},
+			{extraConfigField: "oidc.config", correspondingCRField: ".spec.oidcConfig"},
+			{extraConfigField: "resource.respectRBAC", correspondingCRField: ".spec.controller.respectRBAC"},
+			{extraConfigField: "resource.exclusions", correspondingCRField: ".spec.resourceExclusions"},
+			{extraConfigField: "resource.inclusions", correspondingCRField: ".spec.resourceInclusions"},
+			{extraConfigField: "statusbadge.enabled", correspondingCRField: ".spec.statusBadgeEnabled"},
+			{extraConfigField: "timeout.reconciliation", correspondingCRField: ".spec.controller.appSync"},
+			{extraConfigField: "ui.bannercontent", correspondingCRField: ".spec.banner.content"},
+			{extraConfigField: "ui.bannerpermanent", correspondingCRField: "spec.banner.permanent"},
+			{extraConfigField: "ui.bannerposition", correspondingCRField: ".spec.banner.position"},
+			{extraConfigField: "ui.bannerurl", correspondingCRField: ".spec.banner.url"},
+			{extraConfigField: "users.anonymous.enabled", correspondingCRField: ".spec.usersAnonymousEnabled"},
 		}
 
-		if extraConfig["statusbadge.enabled"] != "" {
-			*issues = append(*issues, issue{
-				level:   LogLevel_Warn,
-				field:   ".spec.extraConfig[statusbadge.enabled] = (...)",
-				message: "The 'statusbadge.enabled' value in extraConfig is supported, but it is preferable to use '.spec.statusBadgeEnabled' ArgoCD CR field for this.",
-			})
+		for _, directTranslation := range directTranslations {
+			if extraConfig[directTranslation.extraConfigField] != "" {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Warn,
+					field:   ".spec.extraConfig[" + directTranslation.extraConfigField + "] = (...)",
+					message: "The '" + directTranslation.extraConfigField + "' value in extraConfig is supported, but it is preferable to use '" + directTranslation.correspondingCRField + "' ArgoCD CR field for this.",
+				})
+			}
 		}
 
+		for extraconfigKey := range argoCD.Spec.ExtraConfig {
+			if strings.HasPrefix(extraconfigKey, "resource.customizations.health.") {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Warn,
+					field:   ".spec.extraConfig[resource.customizations.health.*] = (...)",
+					message: "The 'resource.customizations.health.*' values in extraConfig are supported, but it is preferable to use '.spec.resourceHealthChecks' ArgoCD CR field for this.",
+				})
+				break // Only add the issue once
+			}
+		}
+		for extraconfigKey := range argoCD.Spec.ExtraConfig {
+			if strings.HasPrefix(extraconfigKey, "resource.customizations.actions.") {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Warn,
+					field:   ".spec.extraConfig[resource.customizations.actions.*] = (...)",
+					message: "The 'resource.customizations.actions.*' values in extraConfig are supported, but it is preferable to use '.spec.resourceActions' ArgoCD CR field for this.",
+				})
+				break // Only add the issue once
+			}
+		}
+
+		for extraconfigKey := range argoCD.Spec.ExtraConfig {
+			if strings.HasPrefix(extraconfigKey, "resource.customizations.ignoreDifferences.") {
+				*issues = append(*issues, issue{
+					level:   LogLevel_Warn,
+					field:   ".spec.extraConfig[resource.customizations.ignoreDifferences.*] = (...)",
+					message: "The 'resource.customizations.ignoreDifferences*' values in extraConfig are supported, but it is preferable to use '.spec.resourceIgnoreDifferences' ArgoCD CR field for this.",
+				})
+				break // Only add the issue once
+			}
+		}
 	}
 
 	if argoCD.Spec.ApplicationSet != nil && argoCD.Spec.ApplicationSet.Enabled != nil && *argoCD.Spec.ApplicationSet.Enabled == true {
