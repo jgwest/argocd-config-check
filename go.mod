@@ -6,6 +6,7 @@ require (
 	github.com/argoproj-labs/argocd-operator v0.17.0
 	github.com/argoproj/argo-cd/v3 v3.2.3
 	github.com/blang/semver/v4 v4.0.0
+	github.com/fatih/color v1.18.0
 	github.com/openshift/api v0.0.0-20240906151052-5d963dce87aa
 	github.com/operator-framework/api v0.37.0
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.73.2
@@ -87,6 +88,8 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/liggitt/tabwriter v0.0.0-20181228230101-89fcab3d43de // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/moby/spdystream v0.5.0 // indirect
 	github.com/moby/term v0.5.2 // indirect

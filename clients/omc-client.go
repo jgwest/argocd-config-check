@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -31,12 +32,17 @@ func (o *omcClient) ListFromAllNamespaces(ctx context.Context, list client.Objec
 
 	typeFromList, err := convertObjectListToOMCType(list)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to convert objectListToOMCType: %v", err)
 	}
 
 	cmd := exec.Command("omc", "get", typeFromList, "-A", "-o", "yaml")
 	outBytes, err := cmd.CombinedOutput()
 	k8sResourceListYAML := (string)(outBytes)
+
+	// omc returns yaml EXCEPT when (e.g.) this error occurs. Note that when this error occurs, error code from omc is 0.
+	if strings.HasPrefix(k8sResourceListYAML, "No resources ") && strings.HasSuffix(strings.TrimSpace(k8sResourceListYAML), "found.") {
+		return nil
+	}
 
 	if err != nil {
 		return fmt.Errorf("Output from OMC: %s\nUnable to retrieve '%s' from all namespaces: %v", k8sResourceListYAML, typeFromList, err)

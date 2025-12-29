@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/argoproj-labs/argocd-operator/api/v1beta1"
 	semver "github.com/blang/semver/v4"
+	"github.com/fatih/color"
 	"github.com/jgwest/argocd-config-check/clients"
 	olmv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +35,7 @@ func main() {
 		if err != nil {
 			failWithError("unable to retrieve OMC client data from '"+pathToOMCDirectory+"'", err)
 		}
+		outputStatusMessage("Using must-gather from '" + pathToOMCDirectory + "'")
 
 	} else {
 		outputStatusMessage("Unexpected number of arguments. Valid parameters are:")
@@ -46,6 +49,7 @@ func main() {
 
 		failWithError("Unexpected number of arguments.", nil)
 	}
+	outputStatusMessage("")
 
 	ctx := context.Background()
 
@@ -81,7 +85,18 @@ type entry struct {
 }
 
 func (e entry) string() string {
-	return fmt.Sprintf("[%s] %s", e.level, e.message)
+	var coloredLevel string
+	switch e.level {
+	case LogLevel_Fatal:
+		coloredLevel = color.New(color.FgRed, color.Bold).Sprint(e.level)
+	case LogLevel_Error:
+		coloredLevel = color.RedString(string(e.level))
+	case LogLevel_Warn:
+		coloredLevel = color.YellowString(string(e.level))
+	default:
+		coloredLevel = string(e.level)
+	}
+	return fmt.Sprintf("[%s] %s", coloredLevel, e.message)
 }
 
 func outputEntryList(entries []entry) {
@@ -115,6 +130,7 @@ func acquireInstallConfigurationData(ctx context.Context, k8sClient clients.Abst
 	if err := k8sClient.ListFromAllNamespaces(ctx, &subscriptionList); err != nil {
 
 		if k8sClient.IncompleteControlPlaneData() {
+
 			resEntries = append(resEntries, entry{
 				level:   LogLevel_Warn,
 				message: "Unable to locate operator install Subscription. BUT, this may be expected if because the cluster data is incomplete (for example, if using must-gather, the must-gather may not contain full cluster output of all relevant namespaces). Error: " + err.Error(),
@@ -318,23 +334,35 @@ func runChecks(ctx context.Context, k8sClient clients.AbstractK8sClient) {
 
 	var argoCDList v1beta1.ArgoCDList
 	if err := k8sClient.ListFromAllNamespaces(ctx, &argoCDList); err != nil {
+
+		if k8sClient.IncompleteControlPlaneData() {
+			if strings.Contains(err.Error(), "not known") {
+				outputStatusMessage("NOTE: Based on the error, the must-gather may not be a gitops must-gather (for example, it may instead be an openshift must-gather).")
+			}
+		}
+
 		failWithError("unable to list ArgoCDs", err)
 	}
 
+	// For each Argo CD instance...
 	for _, argoCD := range argoCDList.Items {
 		issues := checkIndividualArgoCDCR(argoCD, clusterInfo)
 
-		outputStatusMessage("--------------------")
-		outputStatusMessage("Namespace '" + argoCD.Namespace + "' -> ArgoCD '" + argoCD.Name + "':")
+		outputStatusMessage("------------------------------------------------------------------------------")
+		coloredNamespace := color.New(color.FgHiCyan).Sprint("Namespace")
+		coloredArgoCD := color.New(color.FgHiCyan).Sprint("ArgoCD")
+		outputStatusMessage(coloredNamespace + " '" + argoCD.Namespace + "' -> " + coloredArgoCD + " '" + argoCD.Name + "':")
 
-		if len(*issues) == 0 {
+		if len(issues) == 0 {
 			outputStatusMessage("No issues found.")
 			continue
 		}
 
+		sortIssuesByField(issues)
+
 		outputStatusMessage("")
 
-		for _, issue := range *issues {
+		for _, issue := range issues {
 			reportIssue(issue)
 			fmt.Println()
 		}
@@ -342,13 +370,32 @@ func runChecks(ctx context.Context, k8sClient clients.AbstractK8sClient) {
 	}
 }
 
+// sortIssuesByField sorts a slice of issues alphabetically by their 'field' field.
+func sortIssuesByField(issues []issue) {
+	sort.Slice(issues, func(i, j int) bool {
+		return issues[i].field < issues[j].field
+	})
+}
+
 func outputStatusMessage(str string) {
 	fmt.Println(str)
 }
 
 func reportIssue(i issue) {
-	fmt.Println("Severity: " + string(i.level))
-	fmt.Println("Field: " + i.field)
+	var coloredLevel string
+	switch i.level {
+	case LogLevel_Fatal:
+		coloredLevel = color.New(color.FgRed, color.Bold).Sprint(i.level)
+	case LogLevel_Error:
+		coloredLevel = color.RedString(string(i.level))
+	case LogLevel_Warn:
+		coloredLevel = color.YellowString(string(i.level))
+	default:
+		coloredLevel = string(i.level)
+	}
+	fmt.Println("Severity: " + coloredLevel)
+	coloredField := color.New(color.FgHiWhite, color.Bold).Sprint(i.field)
+	fmt.Println("Field: " + coloredField)
 	fmt.Println("-", i.message)
 	if i.unsupported {
 		fmt.Println("! Unsupported, non-production configuration. This may be due to use of tech preview/experimental feature, or unsupported configuration. See message for details.")
@@ -364,7 +411,7 @@ type issue struct {
 	unsupported bool
 }
 
-func checkIndividualArgoCDCR(argoCD v1beta1.ArgoCD, clusterInfo clusterInformation) *[]issue {
+func checkIndividualArgoCDCR(argoCD v1beta1.ArgoCD, clusterInfo clusterInformation) []issue {
 
 	issues := []issue{}
 
@@ -378,7 +425,7 @@ func checkIndividualArgoCDCR(argoCD v1beta1.ArgoCD, clusterInfo clusterInformati
 	checkArgoCDStatusField(argoCD, &issues)
 	checkForFailingBestPractices(argoCD, &issues)
 
-	return &issues
+	return issues
 
 }
 
@@ -646,7 +693,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 			if extraConfig[directTranslation.extraConfigField] != "" {
 				*issues = append(*issues, issue{
 					level:   LogLevel_Warn,
-					field:   ".spec.extraConfig[" + directTranslation.extraConfigField + "] = (...)",
+					field:   ".spec.extraConfig[" + directTranslation.extraConfigField + "]",
 					message: "The '" + directTranslation.extraConfigField + "' value in extraConfig is supported, but it is preferable to use '" + directTranslation.correspondingCRField + "' ArgoCD CR field for this.",
 				})
 			}
@@ -656,7 +703,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 			if strings.HasPrefix(extraconfigKey, "resource.customizations.health.") {
 				*issues = append(*issues, issue{
 					level:   LogLevel_Warn,
-					field:   ".spec.extraConfig[resource.customizations.health.*] = (...)",
+					field:   ".spec.extraConfig[resource.customizations.health.*]",
 					message: "The 'resource.customizations.health.*' values in extraConfig are supported, but it is preferable to use '.spec.resourceHealthChecks' ArgoCD CR field for this.",
 				})
 				break // Only add the issue once
@@ -666,7 +713,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 			if strings.HasPrefix(extraconfigKey, "resource.customizations.actions.") {
 				*issues = append(*issues, issue{
 					level:   LogLevel_Warn,
-					field:   ".spec.extraConfig[resource.customizations.actions.*] = (...)",
+					field:   ".spec.extraConfig[resource.customizations.actions.*]",
 					message: "The 'resource.customizations.actions.*' values in extraConfig are supported, but it is preferable to use '.spec.resourceActions' ArgoCD CR field for this.",
 				})
 				break // Only add the issue once
@@ -677,7 +724,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 			if strings.HasPrefix(extraconfigKey, "resource.customizations.ignoreDifferences.") {
 				*issues = append(*issues, issue{
 					level:   LogLevel_Warn,
-					field:   ".spec.extraConfig[resource.customizations.ignoreDifferences.*] = (...)",
+					field:   ".spec.extraConfig[resource.customizations.ignoreDifferences.*]",
 					message: "The 'resource.customizations.ignoreDifferences*' values in extraConfig are supported, but it is preferable to use '.spec.resourceIgnoreDifferences' ArgoCD CR field for this.",
 				})
 				break // Only add the issue once
@@ -692,7 +739,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		if containerEnvVarContainsName(appSet.Env, "ARGOCD_APPLICATIONSET_CONTROLLER_NAMESPACES") {
 			*issues = append(*issues, issue{
 				level:   LogLevel_Error,
-				field:   ".spec.applicationSet.env[ARGOCD_APPLICATIONSET_CONTROLLER_NAMESPACES] = (...)",
+				field:   ".spec.applicationSet.env[ARGOCD_APPLICATIONSET_CONTROLLER_NAMESPACES]",
 				message: "The 'ARGOCD_APPLICATIONSET_CONTROLLER_NAMESPACES' environment variable should not be set directly. Use '.spec.applicationSet.sourceNamespaces' field instead to enable ApplicationSets in any namespace.",
 			})
 		}
@@ -722,7 +769,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		if containerEnvVarContainsName(appController.Env, "ARGOCD_APPLICATION_CONTROLLER_STATUS_PROCESSORS") {
 			*issues = append(*issues, issue{
 				level:   LogLevel_Error,
-				field:   ".spec.controller.env[ARGOCD_APPLICATION_CONTROLLER_STATUS_PROCESSORS] = (...)",
+				field:   ".spec.controller.env[ARGOCD_APPLICATION_CONTROLLER_STATUS_PROCESSORS]",
 				message: "Specifying ARGOCD_APPLICATION_CONTROLLER_STATUS_PROCESSORS is not guaranteed to be supported. Use '.spec.controller.processors.status' ArgoCD CR field for this.",
 			})
 		}
@@ -738,7 +785,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		if containerEnvVarContainsName(appController.Env, "ARGOCD_APPLICATION_CONTROLLER_OPERATION_PROCESSORS") {
 			*issues = append(*issues, issue{
 				level:   LogLevel_Error,
-				field:   ".spec.controller.env[ARGOCD_APPLICATION_CONTROLLER_OPERATION_PROCESSORS] = (...)",
+				field:   ".spec.controller.env[ARGOCD_APPLICATION_CONTROLLER_OPERATION_PROCESSORS]",
 				message: "Specifying ARGOCD_APPLICATION_CONTROLLER_OPERATION_PROCESSORS is not guaranteed to be supported. Use '.spec.controller.processors.operation' ArgoCD CR field for this.",
 			})
 		}
@@ -746,7 +793,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		if containerEnvVarContainsName(appController.Env, "ARGOCD_CONTROLLER_REPLICAS") {
 			*issues = append(*issues, issue{
 				level:   LogLevel_Error,
-				field:   ".spec.controller.env[ARGOCD_CONTROLLER_REPLICAS] = (...)",
+				field:   ".spec.controller.env[ARGOCD_CONTROLLER_REPLICAS]",
 				message: "Specifying ARGOCD_CONTROLLER_REPLICAS is not supported. Use '.spec.controller.sharding.replicas' ArgoCD CR field for this.",
 			})
 		}
@@ -762,7 +809,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		if containerEnvVarContainsName(appController.Env, "ARGOCD_RECONCILIATION_TIMEOUT") {
 			*issues = append(*issues, issue{
 				level:   LogLevel_Error,
-				field:   ".spec.controller.env[ARGOCD_RECONCILIATION_TIMEOUT] = (...)",
+				field:   ".spec.controller.env[ARGOCD_RECONCILIATION_TIMEOUT]",
 				message: "Specifying ARGOCD_RECONCILIATION_TIMEOUT is not supported. Use '.spec.controller.appSync' ArgoCD CR field for this.",
 			})
 		}
@@ -775,7 +822,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		if containerEnvVarContainsName(repo.Env, "ARGOCD_EXEC_TIMEOUT") {
 			*issues = append(*issues, issue{
 				level:   LogLevel_Warn,
-				field:   ".spec.repo.env[ARGOCD_EXEC_TIMEOUT] = (...)",
+				field:   ".spec.repo.env[ARGOCD_EXEC_TIMEOUT]",
 				message: "Specifying ARGOCD_EXEC_TIMEOUT is supported, but it is preferable to use '.spec.repo.execTimeout' ArgoCD CR field for this.",
 			})
 		}
@@ -787,7 +834,7 @@ func checkForEnvVarsOrParamsWhichOverlapWithCRFields(argoCD v1beta1.ArgoCD, issu
 		if containerEnvVarContainsName(server.Env, "ARGOCD_API_SERVER_REPLICAS") {
 			*issues = append(*issues, issue{
 				level:   LogLevel_Error,
-				field:   ".spec.server.env[ARGOCD_API_SERVER_REPLICAS] = (...)",
+				field:   ".spec.server.env[ARGOCD_API_SERVER_REPLICAS]",
 				message: "Specifying ARGOCD_API_SERVER_REPLICAS env is not supported. Instead use ArgoCD CR '.spec.server.replicas'.",
 			})
 		}
