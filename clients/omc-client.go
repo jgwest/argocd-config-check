@@ -110,6 +110,9 @@ func convertObjectListToOMCType(list client.ObjectList) (string, error) {
 		return "subscriptions", nil
 	case "*v1alpha1.ClusterServiceVersion":
 		return "clusterserviceversions", nil
+	case "*v1.NamespaceList":
+		return "namespaces", nil
+
 	default:
 		return "", fmt.Errorf("unrecognized type: %s", listType)
 	}
@@ -124,6 +127,8 @@ func convertObjectToOMCType(obj client.Object) (string, error) {
 		return "subscriptions", nil
 	case "*v1alpha1.ClusterServiceVersion":
 		return "clusterserviceversions", nil
+	case "*v1.Namespace":
+		return "namespaces", nil
 	default:
 		return "", fmt.Errorf("unrecognized type: %s", objType)
 	}

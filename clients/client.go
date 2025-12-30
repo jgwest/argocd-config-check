@@ -10,7 +10,9 @@ type AbstractK8sClient interface {
 
 	// These functions largely mirror client.Client from controller-runtime (slightly simplified in some cases)
 
+	// ListFromAllNamespaces list all resources of a given type across all namespaces. This may also be used for cluster-scoped resources.
 	ListFromAllNamespaces(ctx context.Context, list client.ObjectList) error
+
 	ListFromSingleNamespace(ctx context.Context, list client.ObjectList, namespace string) error
 	Get(ctx context.Context, key client.ObjectKey, obj client.Object) error
 

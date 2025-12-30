@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"github.com/argoproj-labs/argocd-operator/api/v1beta1"
+	"github.com/argoproj-labs/argocd-operator/common"
 	semver "github.com/blang/semver/v4"
 	"github.com/fatih/color"
 	"github.com/jgwest/argocd-config-check/clients"
 	olmv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -64,6 +66,22 @@ type clusterInformation struct {
 
 	// from Subscription 'ARGOCD_CLUSTER_CONFIG_NAMESPACES' env
 	clusterScopedNamespaces []string
+
+	// key: namespace that is managed
+	// value: namespace of argocd instance that is managing
+	namespaceWithManagedByLabel map[string]string
+
+	// key: namespace that is managed
+	// value: namespace of argocd instance that is managing
+	namespaceWithManagedByClusterArgoCDLabel map[string]string
+
+	// key: namespace that is managed
+	// value: namespace of argocd instance that is managing
+	namespaceWithArgoCDApplicationSetManagedByClusterArgoCDLabel map[string]string
+
+	// key: namespace that is managed
+	// value: namespace of argocd instance that is managing
+	namespaceWithArgoCDNotificationsManagedByClusterArgoCDLabel map[string]string
 }
 
 type LogLevel string
@@ -288,6 +306,37 @@ func acquireInstallConfigurationData(ctx context.Context, k8sClient clients.Abst
 
 	resClusterInformation.operatorVersion = &csv.Spec.Version.Version
 
+	// Identify relationships between namespaces and argo cd instances
+	var namespaceList corev1.NamespaceList
+	if err := k8sClient.ListFromAllNamespaces(ctx, &namespaceList); err != nil {
+		resEntries = append(resEntries, entry{
+			level:   LogLevel_Fatal,
+			message: "unable to list Namespaces: " + err.Error(),
+		})
+		return resClusterInformation, resEntries
+	}
+
+	resClusterInformation.namespaceWithManagedByLabel = map[string]string{}
+
+	for _, namespace := range namespaceList.Items {
+
+		if val, exists := namespace.Labels[common.ArgoCDManagedByLabel]; exists {
+			resClusterInformation.namespaceWithManagedByLabel[namespace.Name] = val
+		}
+
+		if val, exists := namespace.Labels[common.ArgoCDManagedByClusterArgoCDLabel]; exists {
+			resClusterInformation.namespaceWithManagedByClusterArgoCDLabel[namespace.Name] = val
+		}
+
+		if val, exists := namespace.Labels[common.ArgoCDApplicationSetManagedByClusterArgoCDLabel]; exists {
+			resClusterInformation.namespaceWithArgoCDApplicationSetManagedByClusterArgoCDLabel[namespace.Name] = val
+		}
+
+		if val, exists := namespace.Labels[common.ArgoCDNotificationsManagedByClusterArgoCDLabel]; exists {
+			resClusterInformation.namespaceWithArgoCDNotificationsManagedByClusterArgoCDLabel[namespace.Name] = val
+		}
+	}
+
 	return resClusterInformation, resEntries
 }
 
@@ -344,6 +393,14 @@ func runChecks(ctx context.Context, k8sClient clients.AbstractK8sClient) {
 		failWithError("unable to list ArgoCDs", err)
 	}
 
+	if len(argoCDList.Items) == 0 {
+		if k8sClient.IncompleteControlPlaneData() {
+			failWithError("unable to locate any ArgoCD CRs: the must-gather may not be a gitops must-gather (for example, it may instead be an openshift must-gather)", nil)
+		} else {
+			failWithError("unable to locate any ArgoCD CRs", nil)
+		}
+	}
+
 	// For each Argo CD instance...
 	for _, argoCD := range argoCDList.Items {
 		issues := checkIndividualArgoCDCR(argoCD, clusterInfo)
@@ -352,6 +409,32 @@ func runChecks(ctx context.Context, k8sClient clients.AbstractK8sClient) {
 		coloredNamespace := color.New(color.FgHiCyan).Sprint("Namespace")
 		coloredArgoCD := color.New(color.FgHiCyan).Sprint("ArgoCD")
 		outputStatusMessage(coloredNamespace + " '" + argoCD.Namespace + "' -> " + coloredArgoCD + " '" + argoCD.Name + "':")
+
+		// {
+		// 	labelMaps := []struct {
+		// 		label      string
+		// 		namespaces map[string]string
+		// 	}{
+		// 		{label: common.ArgoCDManagedByLabel, namespaces: clusterInfo.namespaceWithManagedByLabel},
+		// 		{label: common.ArgoCDManagedByClusterArgoCDLabel, namespaces: clusterInfo.namespaceWithManagedByClusterArgoCDLabel},
+		// 		{label: common.ArgoCDApplicationSetManagedByClusterArgoCDLabel, namespaces: clusterInfo.namespaceWithArgoCDApplicationSetManagedByClusterArgoCDLabel},
+		// 		{label: common.ArgoCDNotificationsManagedByClusterArgoCDLabel, namespaces: clusterInfo.namespaceWithArgoCDNotificationsManagedByClusterArgoCDLabel},
+		// 	}
+
+		// 	for _, lm := range labelMaps {
+		// 		var managedNamespaces []string
+		// 		for ns, managingNS := range lm.namespaces {
+		// 			if managingNS == argoCD.Namespace {
+		// 				managedNamespaces = append(managedNamespaces, ns)
+		// 			}
+		// 		}
+		// 		sort.Strings(managedNamespaces)
+
+		// 		if len(managedNamespaces) > 0 {
+		// 			outputStatusMessage("Namespaces with label '" + lm.label + "': " + strings.Join(managedNamespaces, ", "))
+		// 		}
+		// 	}
+		// }
 
 		if len(issues) == 0 {
 			outputStatusMessage("No issues found.")
@@ -398,7 +481,8 @@ func reportIssue(i issue) {
 	fmt.Println("Field: " + coloredField)
 	fmt.Println("-", i.message)
 	if i.unsupported {
-		fmt.Println("! Unsupported, non-production configuration. This may be due to use of tech preview/experimental feature, or unsupported configuration. See message for details.")
+		coloredBang := color.New(color.FgBlack, color.BgRed).Sprint("!")
+		fmt.Println(coloredBang + " Unsupported, non-production configuration. This may be due to use of tech preview/experimental feature, or unsupported configuration. See message for details.")
 	}
 }
 
